@@ -1,77 +1,57 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
 
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
+    , dht11(0)
+    , mm_radar()
+    , ecgppg()
 {
+    qDebug()<<"helloworld";
     ui->setupUi(this);
-    //this->setWindowFlags(Qt::Dialog|Qt::FramelessWindowHint);
+
+    //init dht11
+    connect(&dht11,SIGNAL(DHT11data(int,int,int,int)),this,SLOT(UpdateTempOnScreen(int,int,int,int)));
 
 
-    //####################################################
-    // -------------------Database----------------------##
-    //####################################################
-
-    if(db.Connect("localhost","mydb","root","12345678"))
-    {
-        OnSQLConnectionStateChanges(true);
-    }
-    connect(&server,SIGNAL(MMDataToDb(QString,qint64,QString,QString)),&db,SLOT(OnMMDataToDb(QString,qint64,QString,QString)));
-    connect(&server,SIGNAL(PPGECGDataToDb(QString,qint64,QString,QString,QString,QString,QString,QString,QString,QString,QString,QString,QString,QString,QString,QString,QString)),&db,SLOT(OnPPGECGDataToDb(QString,qint64,QString,QString,QString,QString,QString,QString,QString,QString,QString,QString,QString,QString,QString,QString,QString)));
+    //init micrometer radar
+    mm_radar.OpenPort("/dev/ttyUSB0",QSerialPort::Baud115200);
 
 
-    //####################################################
-    // --------------------Socket Server----------------##
-    //####################################################
+    //init ppg ecg sensor
+    ecgppg.OpenPort("/dev/ttyUSB1",QSerialPort::Baud115200);
+    ecgppg.TogglePower(0x01);
+    ecgppg.ChangeMode(1);
 
-    bool connected_raspi_slot=connect(&tcp_s,SIGNAL(ReceivedData(QString)),&server,SLOT(ProcessRecvedData(QString)));
-    bool connected_mobile_slot=connect(&ssl_tcp_s,SIGNAL(ReceivedDataWithIP(QString,QString)),&mobile,SLOT(ProcessRecvedData(QString,QString)));
-
-    logger()<<"树莓派的通信槽函数连接了吗？："<<connected_raspi_slot;
-    logger()<<"手机的通信槽函数连接了吗？："<<connected_mobile_slot;
-    InitSocket();
-    InitSslSocket();
-    QtConcurrent::run([this]{StartSocketUpdate();});
-    QtConcurrent::run([this]{StartSSLSocketUpdate();});
+    connect(this, SIGNAL(initend()), this, SLOT(StartRegularUpdate()), Qt::QueuedConnection);
 
 
-    //####################################################
-    // -----------------------UI------------------------##
-    //####################################################
-
-    // initialize timer
-    timer = new QTimer(this);
-    startTime = QTime::currentTime();
-    connect(timer, SIGNAL(timeout()), this, SLOT(UpdateRunTime()));
-    timer->start(1000);
-
-    // status track
-    connect(&server, SIGNAL(BufferDeviceCount(int)), this, SLOT(UpdateDeviceCount(int)));
-    connect(&db,SIGNAL(SQLConnectionStateChange(bool)),this,SLOT(OnSQLConnectionStateChanges(bool)));
-    connect(&server,SIGNAL(BufferDeviceId(QStringList)),this,SLOT(UpdateDeviceList(QStringList)));
-
-    connect(dialog,SIGNAL(QuitDialogIsActive(bool)),this,SLOT(OnQuitDialogIsActive(bool)));
-
-    // set initial page
-
-    ui->stackedWidget->setCurrentIndex(0);
+    //data uploading
+    connect(&mm_radar,SIGNAL(AnalysedData(QString,QString)), &client, SLOT(Send(QString,QString)));
+    connect(&ecgppg, SIGNAL(AnalysedData(QString,QString)), &client, SLOT(Send(QString,QString)));
 
 
-    //####################################################
-    // -----------------Debugging stuff-----------------##
-    //####################################################
+    //----GUI stuff----------------------------------------------
+    //init time display
+    QTimer *update_time_timer=new QTimer(this);
+    connect(update_time_timer,SIGNAL(timeout()),this,SLOT(UpdateTimeOnScreen()));
+    update_time_timer->start(1000);
 
-    // 窗口的宽度和高度(含边框)
-    // qDebug() << this->frameGeometry().width() << this->frameGeometry().height();
+    //update data from sensor
+    connect(&mm_radar,SIGNAL(AnalysedData(QString,QString)),this,SLOT(UpdateMMDataOnScreen(QString,QString)));
 
+    //load image assets
+    offline_logo.load("/home/zzw/CS-project/offline.png");
+    offline_logo=offline_logo.scaled(50,50,Qt::KeepAspectRatio);
+    online_logo.load("/home/zzw/CS-project/online.png");
+    online_logo=online_logo.scaled(50,50,Qt::KeepAspectRatio);
+    ui->label_network_condition->setPixmap(offline_logo);
 
-    // 窗口的宽度和高度(不含边框)
-    // qDebug() << this->geometry().width() << this->geometry().height();//1
-    // qDebug() << this->width() << this->height();//2
-    // qDebug() << this->rect().width() << this->rect().height();//3
-    // qDebug() << this->size().width() << this->size().height();//4
+    connect(&client,SIGNAL(ConnectStatusChanged(bool)),this,SLOT(OnConnectStatusChanged(bool)));
 
+    emit initend();
 }
 
 MainWindow::~MainWindow()
@@ -79,237 +59,79 @@ MainWindow::~MainWindow()
     delete ui;
 }
 
-void MainWindow::closeEvent(QCloseEvent *e)
+void MainWindow::Dht11Start()
 {
-    e->ignore();
-    this->showMinimized();
-}
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    QFuture<void> future;
+    QObject::connect(&timer,&QTimer::timeout,&loop,&QEventLoop::quit);
 
-void MainWindow::InitSocket()
-{
-    if(tcp_s.Bind(7777)<0)
-    {
-        logger()<<"bind error";
-        QMessageBox::StandardButton msgbox;
-        msgbox=QMessageBox::critical(this,tr("Error"),"Failed to start socket server",QMessageBox::Retry|QMessageBox::Cancel);
-        if(msgbox==QMessageBox::Retry)
-        {
-            std::exit(-1);
-        }
-        else if(msgbox==QMessageBox::Cancel)
-            std::exit(-1);
-    }
-    else
-    {
-        logger()<<"server bind success on port 7777";
-    }
-    tcp_s.Listen(1);
-}
-
-void MainWindow::StartSocketUpdate()
-{
     while(1)
     {
-        tcp_s.Accept();
-        tcp_s.Receive();
-    }
-}
+        future=QtConcurrent::run([this]{dht11.StartReading();});
+        timer.start(5000);
+        loop.exec();
 
-void MainWindow::StartSSLSocketUpdate()
-{
-    while(1)
-    {
-        ssl_tcp_s.Accept();
-        ssl_tcp_s.Receive();
-    }
-}
-
-void MainWindow::InitSslSocket()
-{
-    if(ssl_tcp_s.Bind(7778)<0)
-    {
-        logger()<<"ssl tcp server bind error";
-        QMessageBox::StandardButton msgbox;
-        msgbox=QMessageBox::critical(this,tr("Error"),"Failed to start SSL socket server",QMessageBox::Retry|QMessageBox::Cancel);
-        if(msgbox==QMessageBox::Retry)
+        if(timer.isActive())
         {
-            std::exit(-1);
+            timer.stop();
         }
-        else if(msgbox==QMessageBox::Cancel)
-            std::exit(-1);
+        else
+        {
+            //logger()<<"DHT11 time out, retrying...";
+        }
     }
+
+}
+
+void MainWindow::StartRegularUpdate()
+{
+    QtConcurrent::run([this]{Dht11Start();});
+}
+
+
+void MainWindow::UpdateTimeOnScreen()
+{
+    QTime time=QTime::currentTime();
+    QString time_string=time.toString("HH:mm");
+    ui->label_current_time->setText(time_string);
+}
+
+void MainWindow::UpdateTempOnScreen(int humidity,int humidity_float,int temperature,int temperature_float)
+{
+    QString qshumid,qstemp;
+    qshumid.append(QString::number(humidity));
+    qshumid.append(".");
+    qshumid.append(QString::number(humidity_float));
+    qshumid.append("%");
+    qstemp.append(QString::number(temperature));
+    qstemp.append(".");
+    qstemp.append(QString::number(temperature_float).at(0)); //有时读取抽风会出现两位，强制只显示一位，以免搞乱排版 force showing 1 decimal place only
+    qstemp.append("°C");
+    ui->label_temp->setText(qstemp);
+    ui->label_humid->setText(qshumid);
+}
+
+void MainWindow::UpdateMMDataOnScreen(QString category,QString data)
+{
+    if(category=="MMHR")
+        ui->label_heartr_data->setText(data);
+    else if(category=="MMBR")
+        ui->label_breater_data->setText(data);
+}
+
+void MainWindow::OnConnectStatusChanged(bool is_connected)
+{
+    if(is_connected)
+        ui->label_network_condition->setPixmap(online_logo);
     else
-    {
-        logger()<<"SSL server bind success on port 7778";
-    }
-    ssl_tcp_s.Listen(1);
+        ui->label_network_condition->setPixmap(offline_logo);
 }
 
-void MainWindow::UpdateRunTime()
+void MainWindow::on_pushButton_setting_clicked()
 {
-    int elapsed = startTime.secsTo(QTime::currentTime());
-    QTime runTime(0, 0);
-    runTime = runTime.addSecs(elapsed);
-    ui->label_run_time->setText(runTime.toString("hh:mm:ss"));
+    s.show();
 }
 
-void MainWindow::UpdateDeviceCount(int num)
-{
-    // logger()<<"set UI device count to"<<num;
-    ui->label_connections->setText(QString::number(num));
-    ui->label_home_device_count->setText(QString::number(num));
-    if(num>0)
-    {
-        ui->label_home_device_count->setStyleSheet("color:#60D838");
-        ui->label_online_check->setStyleSheet("image: url(:/navi/green_circle.svg);");
-    }
-    else
-    {
-        ui->label_home_device_count->setStyleSheet("color:#FF634D");
-        ui->label_online_check->setStyleSheet("image: url(:/navi/red_circle.svg);");
-    }
-}
-
-void MainWindow::OnSQLConnectionStateChanges(bool connected)
-{
-    if(connected)
-    {
-        ui->label_SQL->setStyleSheet("image: url(:/navi/sql_green.png);");
-        ui->label_sql_check->setStyleSheet("image: url(:/navi/green_circle.svg);");
-        ui->label_home_sql_stat->setText("connected");
-        ui->label_home_sql_stat->setStyleSheet("color:#60D838");
-    }
-    else
-    {
-        ui->label_SQL->setStyleSheet("image: url(:/navi/sql_amber.png);");
-        ui->label_sql_check->setStyleSheet("image: url(:/navi/red_circle.svg);");
-        ui->label_home_sql_stat->setText("not connected, you may want to restart the program");
-        ui->label_home_sql_stat->setStyleSheet("color:#FF634D");
-    }
-}
-
-void MainWindow::UpdateDeviceList(QStringList sl)
-{
-    QStringListModel *model;
-    model = new QStringListModel(this);
-    model->setStringList(sl);
-    ui->listView_devices->setModel(model);
-}
-
-
-void MainWindow::on_toolButton_bind_clicked()
-{
-    if(tcp_s.Bind(7777)<0)
-    {
-        logger()<<"bind error";
-    }
-    else
-        logger()<<"bind success on port 7777";
-}
-
-
-void MainWindow::on_toolButton_listen_clicked()
-{
-    tcp_s.Listen(1);
-}
-
-
-void MainWindow::on_toolButton_accept_clicked()
-{
-    tcp_s.Accept();
-}
-
-
-void MainWindow::on_toolButton_recv_clicked()
-{
-    tcp_s.Receive();
-}
-
-
-void MainWindow::on_toolButton_home_clicked()
-{
-    ui->stackedWidget->setCurrentIndex(0);
-}
-
-
-void MainWindow::on_toolButton_data_clicked()
-{
-    ui->stackedWidget->setCurrentIndex(1);
-}
-
-
-void MainWindow::on_toolButton_data_2_clicked()
-{
-    ui->stackedWidget->setCurrentIndex(2);
-}
-
-
-void MainWindow::on_toolButton_setting_clicked()
-{
-    ui->stackedWidget->setCurrentIndex(3);
-}
-
-
-void MainWindow::on_toolButton_quit_clicked()
-{
-    // prevent showing multiple dialogs
-    if(!quit_dialog_is_active)
-    {
-        dialog->show();
-    }
-}
-
-void MainWindow::OnQuitDialogIsActive(bool state)
-{
-    quit_dialog_is_active=state;
-}
-
-
-void MainWindow::on_toolButton_ssl_bind_clicked()
-{
-    if(ssl_tcp_s.Bind(7778)<0)
-    {
-        logger()<<"ssl socket bind error";
-    }
-    else
-        logger()<<"ssl socket bind success on port 7778";
-}
-
-
-void MainWindow::on_toolButton_ssl_listen_clicked()
-{
-    ssl_tcp_s.Listen(1);
-}
-
-
-void MainWindow::on_toolButton_ssl_accept_clicked()
-{
-    ssl_tcp_s.Accept();
-}
-
-
-void MainWindow::on_toolButton_ssl_recv_clicked()
-{
-    ssl_tcp_s.Receive();
-}
-
-
-void MainWindow::on_toolButton_ssl_close_clicked()
-{
-    ssl_tcp_s.Close();
-}
-
-
-void MainWindow::on_toolButton_ssl_send_clicked()
-{
-    QByteArray ba=ui->textEdit_ssl_send->toPlainText().toLatin1();
-    ssl_tcp_s.Send(ba.data());
-}
-
-
-
-void MainWindow::on_toolButton_user_save_clicked()
-{
-    mobile.user.SaveUserToJson();
-}
 

@@ -18,16 +18,17 @@ public:
     logger& operator<<(const T& data) {
         if(output_date)
         {
-            QDateTime currentDateTime = QDateTime::currentDateTime();
-            //std::cout<<"["<<currentDateTime.toString(Qt::ISODate).toStdString()<<"] "<<data;
-            qDebug()<<"["<<currentDateTime.toString(Qt::ISODate)<<"] "<<data;
-            output_date=false;
+        QDateTime currentDateTime = QDateTime::currentDateTime();
+        //std::cout<<"["<<currentDateTime.toString(Qt::ISODate).toStdString()<<"] "<<data;
+        qDebug()<<"["<<currentDateTime.toString(Qt::ISODate)<<"] "<<data;
+        output_date=false;
         }
         else
         {
             //std::cout<<data;
             qDebug()<<data;
         }
+
 
         return *this; //返回引用以支持链式调用 support chained calls
     }

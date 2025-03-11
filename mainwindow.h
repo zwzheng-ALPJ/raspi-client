@@ -2,26 +2,26 @@
 #define MAINWINDOW_H
 
 #include <QMainWindow>
-
-#include <QMessageBox>
+#include <QDebug>
+#include <wiringPi.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <QScreen>
 #include <QtConcurrent>
 #include <QTime>
-#include <QCloseEvent>
+#include <QTimer>
 
-#include "tcp_server.h"
-#include "ssl_tcp_server.h"
-#include "sql_connect.h"
-#include "logger.h"
+
+#include "dht11.h"
+#include "mm_radar.h"
+#include "settings.h"
+#include "tcp_cilent.h"
+#include "config.h"
+#include "ecgppg.h"
 #include "communi_protocol_handler.h"
-#include "quitdialog.h"
-#include "ssl_tcp_server.h"
-#include "mobile_communi_protocol_handler.h"
-#include "user_access_control.h"
 
 QT_BEGIN_NAMESPACE
-namespace Ui {
-class MainWindow;
-}
+namespace Ui { class MainWindow; }
 QT_END_NAMESPACE
 
 class MainWindow : public QMainWindow
@@ -31,62 +31,43 @@ class MainWindow : public QMainWindow
 public:
     MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
-    void closeEvent(QCloseEvent*);
 
+public slots:
+    void UpdateTempOnScreen(int humidity,int humidity_float,int temperature,int temperature_float);
+
+
+private slots:
+    void StartRegularUpdate();
+
+    void Dht11Start();
+
+    void UpdateTimeOnScreen();
+
+    void UpdateMMDataOnScreen(QString category,QString data);
+
+    void on_pushButton_setting_clicked();
+
+    void OnConnectStatusChanged(bool status);
+
+signals:
+
+    void initend();
 
 private:
     Ui::MainWindow *ui;
 
-    CTcpServer tcp_s;
+    Settings s;
 
-    CTcpServer ssl_tcp_s;
+    //Create sensors' object
+    CDht11 dht11;
+    CMmRadar mm_radar;
+    CEcgPpg ecgppg;
 
-    CCommuniProtocolHandler server;
+    CCommuniProtocolHandler client;
+    CTcpClient tcp_c;
+    CConfig config;
 
-    CMobileCommuniProtocolHandler mobile;
-
-    CSqlConnect db;
-
-    void InitSocket();
-
-    void StartSocketUpdate();
-
-    void StartSSLSocketUpdate();
-
-    void InitSslSocket();
-
-    QTimer *timer;
-    QTime startTime;
-
-    CQuitDialog *dialog = new CQuitDialog(this);
-    bool quit_dialog_is_active=false;
-
-private slots:
-    void UpdateRunTime();
-
-    void UpdateDeviceCount(int num);
-
-    void OnSQLConnectionStateChanges(bool connected);
-
-    void UpdateDeviceList(QStringList sl);
-
-    void OnQuitDialogIsActive(bool state);
-
-    void on_toolButton_bind_clicked();
-    void on_toolButton_listen_clicked();
-    void on_toolButton_accept_clicked();
-    void on_toolButton_recv_clicked();
-    void on_toolButton_home_clicked();
-    void on_toolButton_data_clicked();
-    void on_toolButton_data_2_clicked();
-    void on_toolButton_setting_clicked();
-    void on_toolButton_quit_clicked();
-    void on_toolButton_ssl_bind_clicked();
-    void on_toolButton_ssl_listen_clicked();
-    void on_toolButton_ssl_accept_clicked();
-    void on_toolButton_ssl_recv_clicked();
-    void on_toolButton_ssl_close_clicked();
-    void on_toolButton_ssl_send_clicked();
-    void on_toolButton_user_save_clicked();
+    QPixmap offline_logo;
+    QPixmap online_logo;
 };
 #endif // MAINWINDOW_H
